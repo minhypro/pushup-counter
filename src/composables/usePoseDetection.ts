@@ -2,14 +2,14 @@ import { ref, onUnmounted, type Ref } from 'vue'
 import * as tf from '@tensorflow/tfjs'
 import * as poseDetection from '@tensorflow-models/pose-detection'
 import { calculateAngle } from '../utils/angle'
+import { useAudio } from './useAudio'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const UP_THRESHOLD = 160   // degrees – arm fully extended
-const DOWN_THRESHOLD = 90  // degrees – at bottom of push-up
+const DOWN_THRESHOLD = 100  // degrees – at bottom of push-up
 const MIN_SCORE = 0.3      // minimum keypoint confidence
 
-// MoveNet keypoint indices
 const KP = {
   LEFT_SHOULDER: 5,
   RIGHT_SHOULDER: 6,
@@ -19,29 +19,49 @@ const KP = {
   RIGHT_WRIST: 10,
 } as const
 
-// Connected pairs for skeleton overlay (index pairs into the keypoints array)
 const SKELETON: [number, number][] = [
-  [0, 1], [0, 2], [1, 3], [2, 4],                   // face
+  [0, 1], [0, 2], [1, 3], [2, 4],
   [KP.LEFT_SHOULDER, KP.LEFT_ELBOW],
-  [KP.LEFT_ELBOW, KP.LEFT_WRIST],                    // left arm
+  [KP.LEFT_ELBOW, KP.LEFT_WRIST],
   [KP.RIGHT_SHOULDER, KP.RIGHT_ELBOW],
-  [KP.RIGHT_ELBOW, KP.RIGHT_WRIST],                  // right arm
-  [KP.LEFT_SHOULDER, KP.RIGHT_SHOULDER],             // shoulders
+  [KP.RIGHT_ELBOW, KP.RIGHT_WRIST],
+  [KP.LEFT_SHOULDER, KP.RIGHT_SHOULDER],
   [KP.LEFT_SHOULDER, 11],
-  [KP.RIGHT_SHOULDER, 12],                           // torso sides
-  [11, 12],                                          // hips
-  [11, 13], [13, 15],                                // left leg
-  [12, 14], [14, 16],                                // right leg
+  [KP.RIGHT_SHOULDER, 12],
+  [11, 12],
+  [11, 13], [13, 15],
+  [12, 14], [14, 16],
 ]
 
-// ─── Composable ───────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export type Phase = 'UP' | 'DOWN' | 'UNKNOWN'
+export type WorkoutMode = 'free' | 'structured'
+
+export interface LapRecord {
+  lap: number
+  reps: number
+  durationMs: number
+}
+
+// ─── Composable ───────────────────────────────────────────────────────────────
 
 export function usePoseDetection(
   videoRef: Ref<HTMLVideoElement | null>,
   canvasRef: Ref<HTMLCanvasElement | null>,
 ) {
+  const audio = useAudio()
+
+  // ── Workout config (user-settable before starting) ──────────────────────────
+  const workoutMode = ref<WorkoutMode>('free')
+  const targetReps = ref(10)
+  const totalLaps = ref(3)
+  const restDuration = ref(30) // seconds
+
+  // ── Video aspect ratio (updated once first frame dimensions are known) ───────
+  const videoAspect = ref('4 / 3')
+
+  // ── Runtime state ────────────────────────────────────────────────────────────
   const isLoading = ref(false)
   const isRunning = ref(false)
   const repCount = ref(0)
@@ -49,18 +69,26 @@ export function usePoseDetection(
   const phase = ref<Phase>('UNKNOWN')
   const isFlashing = ref(false)
   const error = ref('')
+  const countdown = ref<number | null>(null)
+  const lapCount = ref(1)
+  const currentLapReps = ref(0)
+  const lapHistory = ref<LapRecord[]>([])
+  const isOnBreak = ref(false)
+  const restTimeLeft = ref(0)
+  const isCompleted = ref(false)
 
   let detector: poseDetection.PoseDetector | null = null
   let stream: MediaStream | null = null
   let rafId: number | null = null
   let phaseState: Phase = 'UNKNOWN'
   let flashTimer: ReturnType<typeof setTimeout> | null = null
+  let restTimer: ReturnType<typeof setInterval> | null = null
+  let lapStartMs = 0
+  let startGen = 0
 
-  // ── Model init ──────────────────────────────────────────────────────────────
+  // ── Model init ───────────────────────────────────────────────────────────────
 
   async function initDetector() {
-    // Force WebGL — @tensorflow/tfjs registers WebGPU as highest-priority
-    // but it may not be supported or may hang; WebGL is the reliable choice.
     await tf.setBackend('webgl')
     await tf.ready()
     detector = await poseDetection.createDetector(
@@ -69,26 +97,22 @@ export function usePoseDetection(
     )
   }
 
-  // ── Camera ──────────────────────────────────────────────────────────────────
+  // ── Camera ───────────────────────────────────────────────────────────────────
 
   async function startCamera() {
+    // No height constraint — let the device use its natural orientation
+    // (portrait phones deliver ~480×640; landscape delivers ~640×480)
     stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: 'user',
-        width: { ideal: 640 },
-        height: { ideal: 480 },
-      },
+      video: { facingMode: 'user', width: { ideal: 640 } },
     })
-
     const video = videoRef.value!
     video.srcObject = stream
-
     await new Promise<void>((resolve, reject) => {
       video.onloadedmetadata = () => video.play().then(resolve).catch(reject)
     })
   }
 
-  // ── Drawing ─────────────────────────────────────────────────────────────────
+  // ── Drawing ──────────────────────────────────────────────────────────────────
 
   function drawFrame(
     ctx: CanvasRenderingContext2D,
@@ -96,20 +120,17 @@ export function usePoseDetection(
     keypoints?: poseDetection.Keypoint[],
   ) {
     const { videoWidth: w, videoHeight: h } = video
-
-    // Sync canvas buffer dimensions to the live video
     const canvas = ctx.canvas
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w || 640
       canvas.height = h || 480
+      // Keep the CSS container in sync with the actual video aspect ratio
+      if (w > 0 && h > 0) videoAspect.value = `${w} / ${h}`
     }
-
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
     if (!keypoints) return
 
-    // Skeleton lines
-    ctx.strokeStyle = '#22d3ee'   // cyan-400
+    ctx.strokeStyle = '#22d3ee'
     ctx.lineWidth = 2.5
     ctx.lineCap = 'round'
     for (const [a, b] of SKELETON) {
@@ -122,8 +143,6 @@ export function usePoseDetection(
       ctx.lineTo(kpB.x, kpB.y)
       ctx.stroke()
     }
-
-    // Keypoint dots
     for (const kp of keypoints) {
       if ((kp.score ?? 0) < MIN_SCORE) continue
       ctx.beginPath()
@@ -136,7 +155,7 @@ export function usePoseDetection(
     }
   }
 
-  // ── Push-up state machine ───────────────────────────────────────────────────
+  // ── Push-up state machine ────────────────────────────────────────────────────
 
   function processPushup(keypoints: poseDetection.Keypoint[]) {
     const left = {
@@ -150,24 +169,26 @@ export function usePoseDetection(
       wrist: keypoints[KP.RIGHT_WRIST],
     }
 
-    // Pick the side where all three joints have higher minimum confidence
     const scoreOf = (s: typeof left) =>
       Math.min(s.shoulder.score ?? 0, s.elbow.score ?? 0, s.wrist.score ?? 0)
-
     const leftScore = scoreOf(left)
     const rightScore = scoreOf(right)
     if (Math.max(leftScore, rightScore) < MIN_SCORE) return
 
     const side = leftScore >= rightScore ? left : right
-
     const angle = calculateAngle(side.shoulder, side.elbow, side.wrist)
     currentAngle.value = Math.round(angle)
 
     if (angle > UP_THRESHOLD) {
-      // Transitioning UP after being DOWN = completed rep
-      if (phaseState === 'DOWN') {
+      if (phaseState === 'DOWN' && countdown.value === null && !isOnBreak.value) {
         repCount.value++
+        currentLapReps.value++
         triggerFlash()
+        audio.playRepChime()
+        // Structured mode: auto-end lap when target reps reached
+        if (workoutMode.value === 'structured' && currentLapReps.value >= targetReps.value) {
+          endLap()
+        }
       }
       phaseState = 'UP'
       phase.value = 'UP'
@@ -175,7 +196,6 @@ export function usePoseDetection(
       phaseState = 'DOWN'
       phase.value = 'DOWN'
     }
-    // Angles between thresholds don't change phase (hysteresis)
   }
 
   function triggerFlash() {
@@ -196,9 +216,7 @@ export function usePoseDetection(
     if (video && canvas && ctx && detector && video.readyState >= 2) {
       try {
         const poses = await detector.estimatePoses(video, { flipHorizontal: false })
-
-        if (!isRunning.value) return // stop called while awaiting
-
+        if (!isRunning.value) return
         if (poses.length > 0) {
           drawFrame(ctx, video, poses[0].keypoints)
           processPushup(poses[0].keypoints)
@@ -206,7 +224,6 @@ export function usePoseDetection(
           drawFrame(ctx, video)
         }
       } catch {
-        // Silently skip frames that fail (e.g. tab backgrounded)
         if (video && canvas && ctx) drawFrame(ctx, video)
       }
     }
@@ -216,44 +233,15 @@ export function usePoseDetection(
     }
   }
 
-  // ── Public API ───────────────────────────────────────────────────────────────
+  // ── Camera/loop teardown (without resetting counts) ──────────────────────────
 
-  async function start() {
-    error.value = ''
-    isLoading.value = true
-    try {
-      // Camera permission + model init run concurrently so the browser
-      // shows the camera dialog immediately while the model downloads.
-      await Promise.all([
-        startCamera(),
-        detector ? Promise.resolve() : initDetector(),
-      ])
-
-      repCount.value = 0
-      currentAngle.value = 0
-      phaseState = 'UNKNOWN'
-      phase.value = 'UNKNOWN'
-      isRunning.value = true
-      detectionLoop()
-    } catch (e: unknown) {
-      // If camera was granted but model failed (or vice-versa), clean up
-      stop()
-      error.value =
-        e instanceof Error
-          ? e.message
-          : 'Could not start camera or load AI model. Check permissions and try again.'
-    } finally {
-      isLoading.value = false
-    }
-  }
-
-  function stop() {
+  function stopCamera() {
+    startGen++
     isRunning.value = false
+    countdown.value = null
 
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId)
-      rafId = null
-    }
+    if (restTimer !== null) { clearInterval(restTimer); restTimer = null }
+    if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null }
 
     stream?.getTracks().forEach((t) => t.stop())
     stream = null
@@ -265,16 +253,138 @@ export function usePoseDetection(
     canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
   }
 
-  function reset() {
+  // ── Public API ───────────────────────────────────────────────────────────────
+
+  async function start() {
+    error.value = ''
+    isLoading.value = true
+
+    try {
+      await Promise.all([
+        startCamera(),
+        detector ? Promise.resolve() : initDetector(),
+      ])
+    } catch (e: unknown) {
+      stop()
+      error.value = e instanceof Error
+        ? e.message
+        : 'Could not start camera or load AI model. Check permissions and try again.'
+      isLoading.value = false
+      return
+    }
+
+    isLoading.value = false
     repCount.value = 0
+    currentLapReps.value = 0
     currentAngle.value = 0
     phaseState = 'UNKNOWN'
     phase.value = 'UNKNOWN'
+    lapCount.value = 1
+    lapHistory.value = []
+    isOnBreak.value = false
+    isCompleted.value = false
+    restTimeLeft.value = 0
+    lapStartMs = Date.now()
+
+    const gen = ++startGen
+    isRunning.value = true
+    detectionLoop()
+
+    await audio.playCountdown(n => {
+      if (startGen === gen) countdown.value = n
+    })
+
+    if (startGen !== gen || !isRunning.value) return
+    countdown.value = null
+    audio.startBeat()
   }
 
-  onUnmounted(stop)
+  function stop() {
+    stopCamera()
+    audio.stopBeat()
+    isOnBreak.value = false
+    restTimeLeft.value = 0
+  }
+
+  function reset() {
+    const wasOnBreak = isOnBreak.value
+    if (restTimer !== null) { clearInterval(restTimer); restTimer = null }
+    repCount.value = 0
+    currentLapReps.value = 0
+    currentAngle.value = 0
+    lapCount.value = 1
+    lapHistory.value = []
+    isOnBreak.value = false
+    isCompleted.value = false
+    restTimeLeft.value = 0
+    lapStartMs = Date.now()
+    phaseState = 'UNKNOWN'
+    phase.value = 'UNKNOWN'
+    if (isRunning.value && wasOnBreak && countdown.value === null) {
+      audio.startBeat()
+    }
+  }
+
+  function endLap() {
+    lapHistory.value.push({
+      lap: lapCount.value,
+      reps: currentLapReps.value,
+      durationMs: Date.now() - lapStartMs,
+    })
+
+    const allDone = workoutMode.value === 'structured' && lapCount.value >= totalLaps.value
+    if (allDone) {
+      audio.stopBeat()
+      stopCamera()
+      audio.playComplete()
+      isCompleted.value = true
+      return
+    }
+
+    isOnBreak.value = true
+    audio.stopBeat()
+
+    if (workoutMode.value === 'structured') {
+      restTimeLeft.value = restDuration.value
+      if (restTimer !== null) clearInterval(restTimer)
+      restTimer = setInterval(() => {
+        restTimeLeft.value--
+        if (restTimeLeft.value === 3) audio.playRestWarning()
+        if (restTimeLeft.value <= 0) {
+          clearInterval(restTimer!)
+          restTimer = null
+          if (isRunning.value) resumeLap()
+        }
+      }, 1000)
+    }
+  }
+
+  function resumeLap() {
+    if (restTimer !== null) { clearInterval(restTimer); restTimer = null }
+    lapCount.value++
+    currentLapReps.value = 0
+    restTimeLeft.value = 0
+    lapStartMs = Date.now()
+    phaseState = 'UNKNOWN'
+    phase.value = 'UNKNOWN'
+    isOnBreak.value = false
+    audio.startBeat()
+  }
+
+  onUnmounted(() => {
+    stopCamera()
+    audio.stopBeat()
+    audio.destroy()
+  })
 
   return {
+    videoAspect,
+    // Config
+    workoutMode,
+    targetReps,
+    totalLaps,
+    restDuration,
+    // State
     isLoading,
     isRunning,
     repCount,
@@ -282,8 +392,18 @@ export function usePoseDetection(
     phase,
     isFlashing,
     error,
+    countdown,
+    lapCount,
+    currentLapReps,
+    lapHistory,
+    isOnBreak,
+    restTimeLeft,
+    isCompleted,
+    // Actions
     start,
     stop,
     reset,
+    endLap,
+    resumeLap,
   }
 }
