@@ -58,6 +58,16 @@ function formatDuration(ms: number): string {
   const sec = s % 60
   return `${m}:${sec.toString().padStart(2, '0')}`
 }
+
+const SLIDER_MAX = 20
+const sliderChips = computed(() => {
+  if (workoutMode.value === 'structured') return Math.min(targetReps.value, SLIDER_MAX)
+  return SLIDER_MAX
+})
+const sliderFilled = computed(() => {
+  if (workoutMode.value === 'structured') return Math.min(currentLapReps.value, SLIDER_MAX)
+  return currentLapReps.value % (SLIDER_MAX + 1)
+})
 </script>
 
 <template>
@@ -129,17 +139,49 @@ function formatDuration(ms: number): string {
           </div>
         </Transition>
 
-        <!-- ── Countdown overlay ─────────────────────────────────── -->
+        <!-- ── Countdown / Posture guide overlay ────────────────── -->
         <Transition enter-active-class="transition-opacity duration-200" enter-from-class="opacity-0"
           leave-active-class="transition-opacity duration-300" leave-to-class="opacity-0">
           <div v-if="countdown !== null"
-            class="absolute inset-0 flex items-center justify-center bg-zinc-950/65">
-            <Transition mode="out-in" enter-active-class="transition-all duration-150"
-              enter-from-class="opacity-0 scale-150" leave-active-class="transition-all duration-100"
-              leave-to-class="opacity-0 scale-75">
-              <div :key="countdown" class="font-black leading-none"
-                :class="countdown === 0 ? 'text-emerald-400 text-7xl tracking-[0.15em]' : 'text-white text-[8rem]'">
-                {{ countdown === 0 ? 'GO!' : countdown }}
+            class="absolute inset-0 flex flex-col items-center bg-zinc-950/75">
+
+            <!-- Silhouette + number -->
+            <div class="flex-1 flex flex-col items-center justify-center gap-4">
+              <!-- Push-up position silhouette (hidden on GO) -->
+              <Transition enter-active-class="transition-opacity duration-200" enter-from-class="opacity-0"
+                leave-active-class="transition-opacity duration-150" leave-to-class="opacity-0">
+                <svg v-if="countdown !== 0" viewBox="0 0 100 160" class="w-28 opacity-50" fill="white">
+                  <circle cx="50" cy="13" r="11"/>
+                  <path d="M38 23 Q50 26 62 23 L65 75 Q50 78 35 75 Z"/>
+                  <path d="M39 30 L12 82 L17 84 L43 34 Z"/>
+                  <circle cx="14" cy="85" r="4.5"/>
+                  <path d="M61 30 L88 82 L83 84 L57 34 Z"/>
+                  <circle cx="86" cy="85" r="4.5"/>
+                  <path d="M37 73 L63 73 L60 94 L40 94 Z"/>
+                  <path d="M44 93 L42 125 L47 125 L48 93 Z"/>
+                  <path d="M56 93 L58 125 L53 125 L52 93 Z"/>
+                </svg>
+              </Transition>
+
+              <!-- Countdown number -->
+              <Transition mode="out-in" enter-active-class="transition-all duration-150"
+                enter-from-class="opacity-0 scale-150" leave-active-class="transition-all duration-100"
+                leave-to-class="opacity-0 scale-75">
+                <div :key="countdown" class="font-black leading-none"
+                  :class="countdown === 0 ? 'text-emerald-400 text-7xl tracking-[0.15em]' : 'text-white text-8xl'">
+                  {{ countdown === 0 ? 'GO!' : countdown }}
+                </div>
+              </Transition>
+            </div>
+
+            <!-- Instruction text (not shown on GO) -->
+            <Transition enter-active-class="transition-opacity duration-200" enter-from-class="opacity-0"
+              leave-active-class="transition-opacity duration-100" leave-to-class="opacity-0">
+              <div v-if="countdown !== 0" class="pb-8 px-8 text-center">
+                <p class="text-white/90 text-base leading-relaxed drop-shadow">
+                  Get into <strong>push-up position</strong><br>
+                  and hold until <strong class="text-emerald-400">"GO"</strong>
+                </p>
               </div>
             </Transition>
           </div>
@@ -187,6 +229,21 @@ function formatDuration(ms: number): string {
                 Lap {{ lapCount }} · {{ currentLapReps }}
               </template>
             </span>
+          </div>
+        </Transition>
+
+        <!-- ── Rep slider at bottom of video ────────────────────── -->
+        <Transition enter-active-class="transition-opacity duration-300" enter-from-class="opacity-0"
+          leave-active-class="transition-opacity duration-200" leave-to-class="opacity-0">
+          <div v-if="isRunning && countdown === null && !isOnBreak"
+            class="absolute bottom-0 left-0 right-0 flex gap-1 px-3 pb-3 pt-10 bg-gradient-to-t from-black/60 to-transparent pointer-events-none">
+            <div
+              v-for="i in sliderChips"
+              :key="i"
+              class="h-1.5 flex-1 rounded-full transition-colors duration-200"
+              :style="{ maxWidth: '28px' }"
+              :class="i <= sliderFilled ? 'bg-white/90' : 'bg-white/20'"
+            />
           </div>
         </Transition>
 

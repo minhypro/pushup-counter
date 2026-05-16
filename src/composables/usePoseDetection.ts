@@ -20,7 +20,6 @@ const KP = {
 } as const
 
 const SKELETON: [number, number][] = [
-  [0, 1], [0, 2], [1, 3], [2, 4],
   [KP.LEFT_SHOULDER, KP.LEFT_ELBOW],
   [KP.LEFT_ELBOW, KP.LEFT_WRIST],
   [KP.RIGHT_SHOULDER, KP.RIGHT_ELBOW],
@@ -130,8 +129,8 @@ export function usePoseDetection(
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     if (!keypoints) return
 
-    ctx.strokeStyle = '#22d3ee'
-    ctx.lineWidth = 2.5
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)'
+    ctx.lineWidth = 2
     ctx.lineCap = 'round'
     for (const [a, b] of SKELETON) {
       const kpA = keypoints[a]
@@ -143,15 +142,14 @@ export function usePoseDetection(
       ctx.lineTo(kpB.x, kpB.y)
       ctx.stroke()
     }
-    for (const kp of keypoints) {
+    // Skip face keypoints (0–4); only draw body joints
+    for (let i = 5; i < keypoints.length; i++) {
+      const kp = keypoints[i]
       if ((kp.score ?? 0) < MIN_SCORE) continue
       ctx.beginPath()
-      ctx.arc(kp.x, kp.y, 5, 0, Math.PI * 2)
-      ctx.fillStyle = '#ffffff'
+      ctx.arc(kp.x, kp.y, 3.5, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(255,255,255,0.9)'
       ctx.fill()
-      ctx.strokeStyle = '#22d3ee'
-      ctx.lineWidth = 2
-      ctx.stroke()
     }
   }
 
