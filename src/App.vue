@@ -13,6 +13,7 @@ const {
   restDuration,
   isLoading,
   isModelReady,
+  isBodyVisible,
   isRunning,
   repCount,
   currentAngle,
@@ -94,7 +95,9 @@ const sliderFilled = computed(() => {
         :class="[
           isFlashing
             ? 'ring-4 ring-emerald-400 shadow-[0_0_40px_rgba(52,211,153,0.35)]'
-            : 'ring-1 ring-zinc-800',
+            : isRunning && countdown === null && !isOnBreak && !isBodyVisible
+              ? 'ring-2 ring-amber-500/60'
+              : 'ring-1 ring-zinc-800',
         ]"
         :style="{ aspectRatio: videoAspect }"
       >
@@ -235,6 +238,52 @@ const sliderFilled = computed(() => {
                 Lap {{ lapCount }} · {{ currentLapReps }}
               </template>
             </span>
+          </div>
+        </Transition>
+
+        <!-- ── Body-out-of-frame overlay ──────────────────────────── -->
+        <Transition enter-active-class="transition-opacity duration-300" enter-from-class="opacity-0"
+          leave-active-class="transition-opacity duration-200" leave-to-class="opacity-0">
+          <div v-if="isRunning && countdown === null && !isOnBreak && !isBodyVisible"
+            class="absolute inset-0 flex flex-col bg-black/55">
+
+            <!-- Silhouette centred in the upper portion -->
+            <div class="flex-1 flex items-center justify-center">
+              <svg viewBox="0 0 200 260" class="h-4/5 max-h-64 opacity-70 drop-shadow-lg" fill="white">
+                <!-- Head -->
+                <circle cx="100" cy="24" r="21"/>
+                <!-- Neck -->
+                <path d="M91 44 L109 44 L110 58 L90 58 Z"/>
+                <!-- Torso -->
+                <path d="M58 62 Q100 67 142 62 L138 148 Q100 153 62 148 Z"/>
+                <!-- Left upper arm -->
+                <path d="M60 69 L22 118 L29 122 L65 75 Z"/>
+                <!-- Left forearm -->
+                <path d="M22 118 L8 166 L18 168 L30 122 Z"/>
+                <!-- Left hand -->
+                <ellipse cx="13" cy="170" rx="9" ry="6" transform="rotate(-20 13 170)"/>
+                <!-- Right upper arm -->
+                <path d="M140 69 L178 118 L171 122 L135 75 Z"/>
+                <!-- Right forearm -->
+                <path d="M178 118 L192 166 L182 168 L170 122 Z"/>
+                <!-- Right hand -->
+                <ellipse cx="187" cy="170" rx="9" ry="6" transform="rotate(20 187 170)"/>
+                <!-- Shorts -->
+                <path d="M64 146 L136 146 L132 192 L68 192 Z"/>
+                <!-- Left leg -->
+                <path d="M72 190 L68 240 L78 240 L80 190 Z"/>
+                <!-- Right leg -->
+                <path d="M128 190 L132 240 L122 240 L120 190 Z"/>
+              </svg>
+            </div>
+
+            <!-- Instruction -->
+            <div class="pb-6 px-6 text-center shrink-0">
+              <p class="text-white text-base leading-snug drop-shadow-md font-medium">
+                Keep <strong>arms & shoulders</strong> fully visible
+              </p>
+              <p class="text-white/60 text-xs mt-1 font-medium tracking-wide uppercase">Counting paused</p>
+            </div>
           </div>
         </Transition>
 

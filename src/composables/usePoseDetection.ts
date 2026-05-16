@@ -8,7 +8,9 @@ import { useAudio } from './useAudio'
 
 const UP_THRESHOLD = 160   // degrees – arm fully extended
 const DOWN_THRESHOLD = 100  // degrees – at bottom of push-up
-const MIN_SCORE = 0.3      // minimum keypoint confidence
+const MIN_SCORE = 0.3      // minimum keypoint confidence for drawing
+const MIN_BODY_SCORE = 0.45 // stricter threshold for counting
+const FRAME_MARGIN = 0.05  // keypoints this close to any edge = out of frame
 
 const KP = {
   LEFT_SHOULDER: 5,
@@ -59,6 +61,7 @@ export function usePoseDetection(
   const isLoading = ref(false)
   const isRunning = ref(false)
   const isModelReady = ref(false)
+  const isBodyVisible = ref(false)
   const repCount = ref(0)
   const currentAngle = ref(0)
   const phase = ref<Phase>('UNKNOWN')
@@ -81,6 +84,22 @@ export function usePoseDetection(
   let restTimer: ReturnType<typeof setInterval> | null = null
   let lapStartMs = 0
   let startGen = 0
+  let currentFrameW = 640
+  let currentFrameH = 480
+
+  // ── Body-in-frame check ──────────────────────────────────────────────────────
+
+  function checkBodyInFrame(keypoints: poseDetection.Keypoint[]): boolean {
+    const mx = currentFrameW * FRAME_MARGIN
+    const my = currentFrameH * FRAME_MARGIN
+    for (let id = KP.LEFT_SHOULDER; id <= KP.RIGHT_WRIST; id++) {
+      const kp = keypoints[id]
+      if (!kp || (kp.score ?? 0) < MIN_BODY_SCORE) return false
+      if (kp.x < mx || kp.x > currentFrameW - mx) return false
+      if (kp.y < my || kp.y > currentFrameH - my) return false
+    }
+    return true
+  }
 
   // ── Model init ───────────────────────────────────────────────────────────────
 
@@ -128,6 +147,8 @@ export function usePoseDetection(
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w || 640
       canvas.height = h || 480
+      currentFrameW = canvas.width
+      currentFrameH = canvas.height
       // Keep the CSS container in sync with the actual video aspect ratio
       if (w > 0 && h > 0) videoAspect.value = `${w} / ${h}`
     }
@@ -161,6 +182,14 @@ export function usePoseDetection(
   // ── Push-up state machine ────────────────────────────────────────────────────
 
   function processPushup(keypoints: poseDetection.Keypoint[]) {
+    if (!checkBodyInFrame(keypoints)) {
+      isBodyVisible.value = false
+      phaseState = 'UNKNOWN'
+      phase.value = 'UNKNOWN'
+      return
+    }
+    isBodyVisible.value = true
+
     const left = {
       shoulder: keypoints[KP.LEFT_SHOULDER],
       elbow: keypoints[KP.LEFT_ELBOW],
@@ -225,6 +254,7 @@ export function usePoseDetection(
           processPushup(poses[0].keypoints)
         } else {
           drawFrame(ctx, video)
+          isBodyVisible.value = false
         }
       } catch {
         if (video && canvas && ctx) drawFrame(ctx, video)
@@ -390,6 +420,7 @@ export function usePoseDetection(
     // State
     isLoading,
     isModelReady,
+    isBodyVisible,
     isRunning,
     repCount,
     currentAngle,
