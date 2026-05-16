@@ -12,6 +12,7 @@ const {
   totalLaps,
   restDuration,
   isLoading,
+  isModelReady,
   isRunning,
   repCount,
   currentAngle,
@@ -75,8 +76,13 @@ const sliderFilled = computed(() => {
 
     <!-- ── Header ────────────────────────────────────────────────── -->
     <header class="mb-6 text-center">
-      <h1 class="text-xs font-semibold tracking-[0.4em] uppercase text-zinc-500">
+      <h1 class="text-xs font-semibold tracking-[0.4em] uppercase text-zinc-500 flex items-center justify-center gap-2">
         AI Push-up Counter
+        <span
+          class="inline-block w-1.5 h-1.5 rounded-full transition-colors duration-500"
+          :class="isModelReady ? 'bg-emerald-400' : 'bg-zinc-600 animate-pulse'"
+          :title="isModelReady ? 'AI ready' : 'Loading AI…'"
+        />
       </h1>
     </header>
 

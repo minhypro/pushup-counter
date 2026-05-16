@@ -25,11 +25,6 @@ const SKELETON: [number, number][] = [
   [KP.RIGHT_SHOULDER, KP.RIGHT_ELBOW],
   [KP.RIGHT_ELBOW, KP.RIGHT_WRIST],
   [KP.LEFT_SHOULDER, KP.RIGHT_SHOULDER],
-  [KP.LEFT_SHOULDER, 11],
-  [KP.RIGHT_SHOULDER, 12],
-  [11, 12],
-  [11, 13], [13, 15],
-  [12, 14], [14, 16],
 ]
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -63,6 +58,7 @@ export function usePoseDetection(
   // ── Runtime state ────────────────────────────────────────────────────────────
   const isLoading = ref(false)
   const isRunning = ref(false)
+  const isModelReady = ref(false)
   const repCount = ref(0)
   const currentAngle = ref(0)
   const phase = ref<Phase>('UNKNOWN')
@@ -77,6 +73,7 @@ export function usePoseDetection(
   const isCompleted = ref(false)
 
   let detector: poseDetection.PoseDetector | null = null
+  let detectorPromise: Promise<void> | null = null
   let stream: MediaStream | null = null
   let rafId: number | null = null
   let phaseState: Phase = 'UNKNOWN'
@@ -87,14 +84,22 @@ export function usePoseDetection(
 
   // ── Model init ───────────────────────────────────────────────────────────────
 
-  async function initDetector() {
-    await tf.setBackend('webgl')
-    await tf.ready()
-    detector = await poseDetection.createDetector(
-      poseDetection.SupportedModels.MoveNet,
-      { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING },
-    )
+  function initDetector(): Promise<void> {
+    if (detectorPromise) return detectorPromise
+    detectorPromise = (async () => {
+      await tf.setBackend('webgl')
+      await tf.ready()
+      detector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING },
+      )
+      isModelReady.value = true
+    })()
+    return detectorPromise
   }
+
+  // Pre-warm the model as soon as the composable is created
+  initDetector().catch(() => { detectorPromise = null })
 
   // ── Camera ───────────────────────────────────────────────────────────────────
 
@@ -142,10 +147,10 @@ export function usePoseDetection(
       ctx.lineTo(kpB.x, kpB.y)
       ctx.stroke()
     }
-    // Skip face keypoints (0–4); only draw body joints
-    for (let i = 5; i < keypoints.length; i++) {
+    // Draw only shoulder/elbow/wrist dots (indices 5–10)
+    for (let i = 5; i <= 10; i++) {
       const kp = keypoints[i]
-      if ((kp.score ?? 0) < MIN_SCORE) continue
+      if (!kp || (kp.score ?? 0) < MIN_SCORE) continue
       ctx.beginPath()
       ctx.arc(kp.x, kp.y, 3.5, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(255,255,255,0.9)'
@@ -260,7 +265,7 @@ export function usePoseDetection(
     try {
       await Promise.all([
         startCamera(),
-        detector ? Promise.resolve() : initDetector(),
+        initDetector(),
       ])
     } catch (e: unknown) {
       stop()
@@ -384,6 +389,7 @@ export function usePoseDetection(
     restDuration,
     // State
     isLoading,
+    isModelReady,
     isRunning,
     repCount,
     currentAngle,
