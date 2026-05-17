@@ -27,6 +27,8 @@ const {
   isOnBreak,
   restTimeLeft,
   isCompleted,
+  gaugeProgress,
+  gaugeReady,
   start,
   stop,
   reset,
@@ -299,6 +301,37 @@ const sliderFilled = computed(() => {
               :style="{ maxWidth: '28px' }"
               :class="i <= sliderFilled ? 'bg-white/90' : 'bg-white/20'"
             />
+          </div>
+        </Transition>
+
+        <!-- ── Right-side depth gauge ────────────────────────────── -->
+        <Transition enter-active-class="transition-opacity duration-500" enter-from-class="opacity-0"
+          leave-active-class="transition-opacity duration-300" leave-to-class="opacity-0">
+          <div
+            v-if="isRunning && countdown === null && !isOnBreak && gaugeReady && isBodyVisible"
+            class="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none"
+            style="height: 38%"
+          >
+            <!-- Top limit marker -->
+            <div class="w-5 h-0.5 bg-white rounded-full shrink-0" />
+
+            <!-- Track -->
+            <div class="relative flex-1 flex justify-center">
+              <div class="w-px h-full bg-white/30 rounded-full" />
+              <!-- Orange indicator bar -->
+              <div
+                class="absolute w-5 h-1.5 rounded-full bg-orange-400 shadow-[0_0_10px_rgba(251,146,60,0.85)]"
+                :style="{
+                  top: `${gaugeProgress * 100}%`,
+                  transform: 'translate(-50%, -50%)',
+                  left: '50%',
+                  transition: 'top 80ms ease-out',
+                }"
+              />
+            </div>
+
+            <!-- Bottom limit marker -->
+            <div class="w-5 h-0.5 bg-white rounded-full shrink-0" />
           </div>
         </Transition>
 

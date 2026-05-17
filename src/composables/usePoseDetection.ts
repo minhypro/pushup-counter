@@ -6,11 +6,14 @@ import { useAudio } from './useAudio'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const UP_THRESHOLD = 160   // degrees – arm fully extended
-const DOWN_THRESHOLD = 100  // degrees – at bottom of push-up
+const UP_THRESHOLD = 160   // degrees – used only to calibrate shoulderBaseY
+const DOWN_THRESHOLD = 100  // degrees – fallback phase detection before gauge is ready
 const MIN_SCORE = 0.3      // minimum keypoint confidence for drawing
 const MIN_BODY_SCORE = 0.45 // stricter threshold for counting
 const FRAME_MARGIN = 0.05  // keypoints this close to any edge = out of frame
+const SHOULDER_DOWN_DELTA = 0.07  // 7% of frame height – minimum gauge range
+const GAUGE_DOWN_THRESHOLD = 0.85 // orange bar must reach 85% to register DOWN
+const GAUGE_UP_THRESHOLD = 0.25   // orange bar must return to 25% to register UP
 
 const KP = {
   LEFT_SHOULDER: 5,
@@ -74,6 +77,8 @@ export function usePoseDetection(
   const isOnBreak = ref(false)
   const restTimeLeft = ref(0)
   const isCompleted = ref(false)
+  const gaugeProgress = ref(0)   // 0 = shoulder at UP baseline, 1 = shoulder at DOWN limit
+  const gaugeReady = ref(false)  // true once shoulderBaseY is calibrated
 
   let detector: poseDetection.PoseDetector | null = null
   let detectorPromise: Promise<void> | null = null
@@ -86,6 +91,8 @@ export function usePoseDetection(
   let startGen = 0
   let currentFrameW = 640
   let currentFrameH = 480
+  const SHOULDER_BUFFER_SIZE = 90  // ~3 s at 30 fps
+  let shoulderYBuffer: number[] = []
 
   // ── Body-in-frame check ──────────────────────────────────────────────────────
 
@@ -155,8 +162,8 @@ export function usePoseDetection(
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     if (!keypoints) return
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)'
-    ctx.lineWidth = 2
+    ctx.strokeStyle = 'white'
+    ctx.lineWidth = 4
     ctx.lineCap = 'round'
     for (const [a, b] of SKELETON) {
       const kpA = keypoints[a]
@@ -168,14 +175,35 @@ export function usePoseDetection(
       ctx.lineTo(kpB.x, kpB.y)
       ctx.stroke()
     }
-    // Draw only shoulder/elbow/wrist dots (indices 5–10)
-    for (let i = 5; i <= 10; i++) {
-      const kp = keypoints[i]
-      if (!kp || (kp.score ?? 0) < MIN_SCORE) continue
+
+    // Vertical shoulder travel indicator
+    const ls = keypoints[KP.LEFT_SHOULDER]
+    const rs = keypoints[KP.RIGHT_SHOULDER]
+    const visibleShoulders = [ls, rs].filter(kp => kp && (kp.score ?? 0) >= MIN_SCORE)
+    if (visibleShoulders.length > 0) {
+      const sx = visibleShoulders.reduce((s, kp) => s + kp!.x, 0) / visibleShoulders.length
+      const sy = visibleShoulders.reduce((s, kp) => s + kp!.y, 0) / visibleShoulders.length
+
+      ctx.save()
+      // Dashed vertical reference line
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)'
+      ctx.lineWidth = 2
+      ctx.setLineDash([10, 8])
       ctx.beginPath()
-      ctx.arc(kp.x, kp.y, 3.5, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(255,255,255,0.9)'
-      ctx.fill()
+      ctx.moveTo(sx, 0)
+      ctx.lineTo(sx, canvas.height)
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      // Current shoulder Y tick
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+      ctx.lineWidth = 3
+      ctx.beginPath()
+      ctx.moveTo(sx - 18, sy)
+      ctx.lineTo(sx + 18, sy)
+      ctx.stroke()
+
+      ctx.restore()
     }
   }
 
@@ -211,20 +239,39 @@ export function usePoseDetection(
     const angle = calculateAngle(side.shoulder, side.elbow, side.wrist)
     currentAngle.value = Math.round(angle)
 
-    if (angle > UP_THRESHOLD) {
+    // Rolling buffer — gauge range = actual observed movement in the last ~3 s
+    shoulderYBuffer.push(side.shoulder.y)
+    if (shoulderYBuffer.length > SHOULDER_BUFFER_SIZE) shoulderYBuffer.shift()
+
+    const bufMinY = Math.min(...shoulderYBuffer)
+    const bufMaxY = Math.max(...shoulderYBuffer)
+    const rangeH = Math.max(bufMaxY - bufMinY, currentFrameH * SHOULDER_DOWN_DELTA)
+    gaugeProgress.value = Math.max(0, Math.min(1, (side.shoulder.y - bufMinY) / rangeH))
+    gaugeReady.value = shoulderYBuffer.length >= 20
+
+    // ── Phase state machine — gauge is the single source of truth ───────────
+    // Fall back to angle thresholds only before the gauge is calibrated.
+    const goingDown = gaugeReady.value
+      ? gaugeProgress.value >= GAUGE_DOWN_THRESHOLD
+      : angle < DOWN_THRESHOLD
+
+    const goingUp = gaugeReady.value
+      ? gaugeProgress.value <= GAUGE_UP_THRESHOLD
+      : angle > UP_THRESHOLD
+
+    if (goingUp) {
       if (phaseState === 'DOWN' && countdown.value === null && !isOnBreak.value) {
         repCount.value++
         currentLapReps.value++
         triggerFlash()
         audio.playRepChime()
-        // Structured mode: auto-end lap when target reps reached
         if (workoutMode.value === 'structured' && currentLapReps.value >= targetReps.value) {
           endLap()
         }
       }
       phaseState = 'UP'
       phase.value = 'UP'
-    } else if (angle < DOWN_THRESHOLD) {
+    } else if (goingDown) {
       phaseState = 'DOWN'
       phase.value = 'DOWN'
     }
@@ -312,6 +359,9 @@ export function usePoseDetection(
     currentAngle.value = 0
     phaseState = 'UNKNOWN'
     phase.value = 'UNKNOWN'
+    shoulderYBuffer = []
+    gaugeProgress.value = 0
+    gaugeReady.value = false
     lapCount.value = 1
     lapHistory.value = []
     isOnBreak.value = false
@@ -353,6 +403,9 @@ export function usePoseDetection(
     lapStartMs = Date.now()
     phaseState = 'UNKNOWN'
     phase.value = 'UNKNOWN'
+    shoulderYBuffer = []
+    gaugeProgress.value = 0
+    gaugeReady.value = false
     if (isRunning.value && wasOnBreak && countdown.value === null) {
       audio.startBeat()
     }
@@ -434,6 +487,8 @@ export function usePoseDetection(
     isOnBreak,
     restTimeLeft,
     isCompleted,
+    gaugeProgress,
+    gaugeReady,
     // Actions
     start,
     stop,
